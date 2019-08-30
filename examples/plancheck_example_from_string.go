@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/pivotal-gss/planchecker/plan"
+	"github.com/chiyang10000/planchecker/plan"
 	"io/ioutil"
 	"os"
 )

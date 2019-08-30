@@ -1,5 +1,5 @@
 {
-	"ImportPath": "github.com/stephendotcarter/planchecker",
+	"ImportPath": "github.com/chiyang10000/planchecker",
 	"GoVersion": "go1.5",
 	"GodepVersion": "v71",
 	"Deps": [
