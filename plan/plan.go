@@ -63,6 +63,9 @@ type Node struct {
 
 	// Flag to detect if we are looking at EXPLAIN or EXPLAIN ANALYZE output
 	IsAnalyzed bool
+
+	// Delay offset of HASH JOIN, APPEND and plan node which has multiple child nodes
+	MsDelay float64
 }
 
 // Each plan has a top node
@@ -123,6 +126,9 @@ type Explain struct {
 	OptimizerStatus string
 	Runtime         float64
 
+	HawqStats       []string
+	NewExecutorMode bool
+
 	// Populated with any warning for the overall EXPLAIN output
 	Warnings []Warning
 
@@ -137,21 +143,25 @@ var (
 	patterns = map[string]*regexp.Regexp{
 		"NODE":    regexp.MustCompile(`(.*) \((cost=(.*)\.\.(.*) ){0,1}rows=(.*) width=(.*)\)`),
 		"SLICE":   regexp.MustCompile(`(.*)  \(slice([0-9]*)`),
-		"SUBPLAN": regexp.MustCompile(` SubPlan `),
+		"SUBPLAN": regexp.MustCompile(`SubPlan `),
 
-		"SLICESTATS":   regexp.MustCompile(` Slice statistics:`),
+		"SLICESTATS":   regexp.MustCompile(`Slice statistics:`),
 		"SLICESTATS_1": regexp.MustCompile(`\((slice[0-9]{1,})\).*Executor memory: ([0-9]{1,})K bytes`),
 		"SLICESTATS_2": regexp.MustCompile(`avg x ([0-9]+) workers, ([0-9]+)K bytes max \((seg[0-9]+)\)\.`),
 		"SLICESTATS_3": regexp.MustCompile(`Work_mem: ([0-9]+)K bytes max.`),
 		"SLICESTATS_4": regexp.MustCompile(`([0-9]+)K bytes wanted.`),
 
-		"STATEMENTSTATS":        regexp.MustCompile(` Statement statistics:`),
+		"STATEMENTSTATS":        regexp.MustCompile(`Statement statistics:`),
 		"STATEMENTSTATS_USED":   regexp.MustCompile(`Memory used: ([0-9.-]{1,})K bytes`),
 		"STATEMENTSTATS_WANTED": regexp.MustCompile(`Memory wanted: ([0-9.-]{1,})K bytes`),
 
-		"SETTINGS":  regexp.MustCompile(` Settings: `),
-		"OPTIMIZER": regexp.MustCompile(` Optimizer status: `),
-		"RUNTIME":   regexp.MustCompile(` Total runtime: `),
+		"SETTINGS":  regexp.MustCompile(`Settings: `),
+		"OPTIMIZER": regexp.MustCompile(`Optimizer status: `),
+		"RUNTIME":   regexp.MustCompile(`Total runtime: `),
+
+		"DISPATCHERSTATISTICS":   regexp.MustCompile(`Dispatcher statistics:`),
+		"DATALOCALITYSTATISTICS": regexp.MustCompile(`Data locality statistics:`),
+		"NEWEXECUTOR": regexp.MustCompile(`New executor mode: ON`),
 	}
 
 	// Keep all checks in NODECHEKS and EXPLAINCHECKS so that we can
@@ -610,16 +620,16 @@ func parseNodeExtraInfo(n *Node) error {
 				}
 			}
 
-			re = regexp.MustCompile(`Max (\S+) rows`)
+			re = regexp.MustCompile(`Max(\S+)? ([0-9.]+)(/\S+)? rows`)
 			m = re.FindStringSubmatch(line)
 			if len(m) == re.NumSubexp()+1 {
-				if s, err := strconv.ParseFloat(m[1], 64); err == nil {
+				if s, err := strconv.ParseFloat(m[2], 64); err == nil {
 					n.MaxRows = s
 					logDebugf("MaxRows %f\n", n.MaxRows)
 				}
 			}
 
-			re = regexp.MustCompile(` (\S+) ms to first row`)
+			re = regexp.MustCompile(` ([0-9.]+)(/\S+)? ms to first row`)
 			m = re.FindStringSubmatch(line)
 			if len(m) == re.NumSubexp()+1 {
 				if s, err := strconv.ParseFloat(m[1], 64); err == nil {
@@ -628,19 +638,19 @@ func parseNodeExtraInfo(n *Node) error {
 				}
 			}
 
-			re = regexp.MustCompile(` (\S+) ms to end`)
+			re = regexp.MustCompile(` ([0-9.]+/)?([0-9.]+) ms to end`)
 			m = re.FindStringSubmatch(line)
 			if len(m) == re.NumSubexp()+1 {
-				if s, err := strconv.ParseFloat(m[1], 64); err == nil {
+				if s, err := strconv.ParseFloat(m[2], 64); err == nil {
 					n.MsEnd = s
 					logDebugf("MsEnd %f\n", n.MsEnd)
 				}
 			}
 
-			re = regexp.MustCompile(`start offset by (\S+) ms`)
+			re = regexp.MustCompile(`start offset by ([0-9.]+/)?([0-9.]+) ms`)
 			m = re.FindStringSubmatch(line)
 			if len(m) == re.NumSubexp()+1 {
-				if s, err := strconv.ParseFloat(m[1], 64); err == nil {
+				if s, err := strconv.ParseFloat(m[2], 64); err == nil {
 					n.MsOffset = s
 					logDebugf("MsOffset %f\n", n.MsOffset)
 				}
@@ -664,6 +674,11 @@ func parseNodeExtraInfo(n *Node) error {
 				}
 			}
 
+			if n.AvgRows > 0 && n.Workers > 0 {
+				n.ActualRows = n.AvgRows * float64(n.Workers)
+				logDebugf("ActualRows %f\n", n.ActualRows)
+			}
+
 			re = regexp.MustCompile(`of (\d+) scans`)
 			m = re.FindStringSubmatch(line)
 			if len(m) == re.NumSubexp()+1 {
@@ -673,7 +688,7 @@ func parseNodeExtraInfo(n *Node) error {
 				}
 			}
 
-			re = regexp.MustCompile(` \((seg\d+)\) `)
+			re = regexp.MustCompile(`\((seg\d+).*\) `)
 			m = re.FindStringSubmatch(line)
 			if len(m) == re.NumSubexp()+1 {
 				n.MaxSeg = m[1]
@@ -776,6 +791,7 @@ func parseNodeExtraInfo(n *Node) error {
 	if n.MsFirst == -1 {
 		n.MsFirst = n.MsEnd
 	}
+	n.MsDelay = 0
 
 	return nil
 }
@@ -878,6 +894,43 @@ func (e *Explain) parseStatementStats(line string) {
 				groups := patterns["STATEMENTSTATS_WANTED"].FindStringSubmatch(e.lines[i])
 				e.MemoryWanted, _ = strconv.ParseInt(strings.TrimSpace(groups[1]), 10, 64)
 			}
+		} else {
+			e.lineOffset = i - 1
+			break
+		}
+	}
+}
+
+// ------------------------------------------------------------
+// Dispatcher statistics:
+//   executors used(total/cached/new connection): (20/0/20); dispatcher time(total/connection/dispatch data): (118.604 ms/104.555 ms/0.780 ms).
+//   dispatch data time(max/min/avg): (0.068 ms/0.021 ms/0.035 ms); consume executor data time(max/min/avg): (0.178 ms/0.005 ms/0.029 ms); free executor time(max/min/avg): (0.000 ms/0.000 ms/0.000 ms).
+func (e *Explain) parseDispatcherStats(line string) {
+	logDebugf("parseDispatcherStats\n")
+	e.planFinished = true
+
+	for i := e.lineOffset + 1; i < len(e.lines); i++ {
+		if getIndent(e.lines[i]) > 1 {
+			logDebugf(e.lines[i])
+			e.HawqStats = append(e.HawqStats, e.lines[i])
+		} else {
+			e.lineOffset = i - 1
+			break
+		}
+	}
+}
+
+// ------------------------------------------------------------
+// Data locality statistics:
+//   data locality ratio: 1.000; virtual segment number: 2; different host number: 1; virtual segment number per host(avg/min/max): (2/2/2); segment size(avg/min/max): (67937505.500 B/26027589 B/109847422 B); segment size with penalty(avg/min/max): (67937505.500 B/26027589 B/109847422 B); continuity(avg/min/max): (1.000/1.000/1.000); DFS metadatacache: 28.978 ms; resource allocation: 4.100 ms; datalocality calculation: 0.947 ms.
+func (e *Explain) parseDataLocalityStats(line string) {
+	logDebugf("parseDataLocalityStats\n")
+	e.planFinished = true
+
+	for i := e.lineOffset + 1; i < len(e.lines); i++ {
+		if getIndent(e.lines[i]) > 1 {
+			logDebugf(e.lines[i])
+			e.HawqStats = append(e.HawqStats, e.lines[i])
 		} else {
 			e.lineOffset = i - 1
 			break
@@ -994,6 +1047,13 @@ func (e *Explain) parseline(line string) error {
 
 	} else if patterns["STATEMENTSTATS"].MatchString(line) {
 		e.parseStatementStats(line)
+
+	} else if patterns["DISPATCHERSTATISTICS"].MatchString(line) {
+		e.parseDispatcherStats(line)
+
+	} else if patterns["DATALOCALITYSTATISTICS"].MatchString(line) {
+		e.parseDataLocalityStats(line)
+
 	} else if patterns["SETTINGS"].MatchString(line) {
 		e.parseSettings(line)
 
@@ -1002,6 +1062,9 @@ func (e *Explain) parseline(line string) error {
 
 	} else if patterns["RUNTIME"].MatchString(line) {
 		e.parseRuntime(line)
+
+	} else if patterns["NEWEXECUTOR"].MatchString(line) {
+		e.NewExecutorMode = true
 
 	} else if indent > 1 && e.planFinished == false {
 		// Only add if node exists
@@ -1118,6 +1181,22 @@ func (n *Node) CalculateSubNodeDiff() {
 		costChild += s.TotalCost
 	}
 
+	for _, s := range n.SubNodes {
+		s.MsDelay = n.MsDelay
+	}
+	re := regexp.MustCompile(`Hash .* Join`)
+	if (re.MatchString(n.Operator)) {
+		n.SubNodes[0].MsDelay = n.SubNodes[1].MsOffset + n.SubNodes[1].MsEnd
+	}
+	if (strings.Contains(n.Operator, "Append")) {
+		for p := 1; p < len(n.SubNodes); p++ {
+			n.SubNodes[p].MsDelay = n.SubNodes[p-1].MsOffset + n.SubNodes[p-1].MsEnd
+		}
+	}
+	if (strings.Contains(n.Operator, "Motion")) {
+		n.SubNodes[0].MsDelay = 0
+	}
+
 	for _, s := range n.SubPlans {
 		//logDebugf("\tSUBPLANNODE%s", s.TopNode.Operator)
 		costChild += s.TopNode.TotalCost
@@ -1125,6 +1204,17 @@ func (n *Node) CalculateSubNodeDiff() {
 
 	n.MsNode = n.MsEnd - msChild
 	n.NodeCost = n.TotalCost - costChild
+
+	if (strings.Contains(n.Operator, "Motion")) {
+		msOffsetChild := n.SubNodes[0].MsOffset
+		msChild := n.SubNodes[0].MsEnd
+		if (n.MsOffset > msOffsetChild + msChild) {
+			n.MsNode = n.MsEnd
+		} else if (n.MsOffset > msOffsetChild && n.MsOffset < msOffsetChild + msChild) {
+			n.MsNode = n.MsEnd - (msChild + msOffsetChild - n.MsOffset)
+		} else {
+		}
+	}
 
 	if n.MsNode < 0 {
 		n.MsNode = 0
@@ -1221,6 +1311,13 @@ func (e *Explain) PrintPlan() {
 		}
 	}
 
+	if len(e.HawqStats) > 0 {
+		fmt.Println("HAWQ statistics:")
+		for _, stat := range e.HawqStats {
+			fmt.Printf("\t%s\n", stat)
+		}
+	}
+
 	if len(e.Settings) > 0 {
 		fmt.Println("Settings:")
 		for _, setting := range e.Settings {
@@ -1288,7 +1385,7 @@ func (e *Explain) InitPlan(plantext string) error {
 		n.CalculateSubNodeDiff()
 
 		// Pass in Cost + Time of top node as it should be equal to total
-		n.CalculatePercentage(e.Nodes[0].TotalCost, e.Nodes[0].MsEnd)
+		n.CalculatePercentage(e.Nodes[0].TotalCost, e.Runtime)
 
 		// Run Node checks
 		for _, c := range NODECHECKS {
