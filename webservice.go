@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -503,33 +504,18 @@ func main() {
 	// Read port from environment
 	port := os.Getenv("PORT")
 	if port == "" {
+		port = "38324"
 		fmt.Println("PORT env variable not set")
-		os.Exit(0)
 	}
 	fmt.Printf("Binding to port %s\n", port)
 
 	dbconnstring = os.Getenv("CONSTRING")
 	if dbconnstring == "" {
 		fmt.Println("CONSTRING env variable not set")
-		os.Exit(0)
 	}
 	fmt.Printf("Database %s\n", dbconnstring)
 
-	// Read testdata in to memory
-	testPlanFilename := "testdata/explain16.txt"
-	if _, err := os.Stat(testPlanFilename); os.IsNotExist(err) {
-		fmt.Printf("Could not find \"%s\"\n", testPlanFilename)
-		os.Exit(0)
-	}
-
-	// Read all lines
-	filedata, err := ioutil.ReadFile(testPlanFilename)
-	if err != nil {
-		fmt.Printf("Could not load \"%s\"\n", testPlanFilename)
-		os.Exit(0)
-	}
-
-	testPlan = string(filedata)
+	fmt.Printf("http://localhost:%s\n", port)
 
 	// Using gorilla/mux as it provides named URL variable parsing
 	r := mux.NewRouter()
@@ -550,5 +536,5 @@ func main() {
 	r.HandleFunc("/plan/", PlanPostHandler)
 
 	// Start listening
-	http.ListenAndServe(":"+port, r)
+	log.Fatal(http.ListenAndServe(":"+port, r))
 }
