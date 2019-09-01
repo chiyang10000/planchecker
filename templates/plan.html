@@ -112,6 +112,42 @@
 <script>
     planRef = "%[3]s";
     planTextBase64 = "%[2]s";
+
+    $(document).ready(function () {
+
+        function getSubNodes(trSet, rootIndent) {
+            var outputStart = false;
+            var outputStop = false;
+            return trSet.filter(function () {
+                    if ($("td > strong", this).length == 0) return false;
+                    if (outputStart && outputStop) return false;
+                    let currWidth = parseInt($("td > strong", this).parent().css("padding-left"))
+                    if (currWidth > rootIndent) {
+                        outputStart = true;
+                        return true;
+                    }
+                    if (outputStart && currWidth <= rootIndent) {
+                        outputStop = true;
+                    }
+                    return false;
+                }
+            );
+        }
+
+        $(".plannode-button").click(function () {
+                let currIndent = parseInt($(this).parent().css("padding-left"));
+                let trSet = $(this).parent().parent().nextAll()
+                if ($(this).text() == '-') {
+                    getSubNodes(trSet, currIndent).slideUp(200);
+                    $(this).text("+")
+                }
+                else {
+                    getSubNodes(trSet, currIndent).slideDown(200);
+                    $(this).text("-")
+                }
+            }
+        );
+    });
 </script>
 
 </body>
