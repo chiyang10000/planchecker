@@ -297,12 +297,34 @@ func RenderNodeHtml(n *plan.Node, indent int) string {
 	indentPixels := indent * indentDepth * 10
 	colspan := 8
 
-	HTML := fmt.Sprintf("<tr><td style=\"padding-left:%dpx\">", indentPixels)
+	// FIXME(chiyang): missing NewQE EXPLAIN ANALYZE info related InitPlan
+	if (len(n.SubNodes) > 0 && n.SubNodes[0].IsAnalyzed) {
+		n.IsAnalyzed = true
+	}
 
+	HTML := "<tr>"
+
+	if n.IsAnalyzed == true {
+		color := ""
+		if (n.MsPrct > 10) {
+			color = "bg-warning"
+		}
+		if (n.MsPrct > 20) {
+			color = "bg-danger"
+		}
+		HTML += fmt.Sprintf("<td class=\"text-right %s\">%.0f%% \n%.0f ms \n%s</td>", color, n.MsPrct, n.MsNode, n.Operator)
+	}
+
+	HTML += fmt.Sprintf("<td style=\"padding-left:%dpx\">", indentPixels)
 	if n.Slice > -1 {
 		HTML += fmt.Sprintf("   <span class=\"label label-success\">Slice %d</span>\n",
 			n.Slice)
 	}
+	if len(n.ObjectType) > 0 {
+		HTML += fmt.Sprintf("   <span class=\"label label-info\">%s: %s</span>\n",
+			n.ObjectType, n.Object)
+	}
+
 	HTML += fmt.Sprintf("<strong>-> %s (cost=%.2f..%.2f rows=%d width=%d)</strong>\n",
 		//HTML += fmt.Sprintf("%s<strong>-> %s</strong>\n",
 		n.Operator,
@@ -321,20 +343,39 @@ func RenderNodeHtml(n *plan.Node, indent int) string {
 
 	HTML += "</td>"
 
+	if n.IsAnalyzed == true {
+		color := ""
+		if (n.MsPrct > 10) {
+			color = "text-warning"
+		}
+		if (n.MsPrct > 20) {
+			color = "text-danger"
+		}
+		HTML += fmt.Sprintf(
+			"<td class=\"text-right\">%.0f</td>"+
+				"<td class=\"text-right\">%.0f</td>"+
+				"<td class=\"text-right\">%.0f</td>"+
+				"<td class=\"text-right\">%.0f</td>"+
+				"<td class=\"text-right %s\">%.0f%%</td>",
+			n.MsOffset,
+			n.MsFirst,
+			n.MsEnd,
+			n.MsNode,
+			color,
+			n.MsPrct,
+		)
+	}
+
 	HTML += fmt.Sprintf(
-		"<td class=\"text-right\">%s</td>"+
-			"<td class=\"text-right\">%s</td>"+
+		"<td class=\"text-right\">%.0f</td>"+
 			"<td class=\"text-right\">%.0f</td>"+
 			"<td class=\"text-right\">%.0f</td>"+
 			"<td class=\"text-right\">%.0f%%</td>"+
-			"<td class=\"text-right\">%.0f</td>"+
 			"<td class=\"text-right\">%d</td>\n",
-		n.Object,
-		n.ObjectType,
 		n.StartupCost,
+		n.TotalCost,
 		n.NodeCost,
 		n.PrctCost,
-		n.TotalCost,
 		n.Rows)
 
 	if n.IsAnalyzed == true {
@@ -345,23 +386,12 @@ func RenderNodeHtml(n *plan.Node, indent int) string {
 					"<td class=\"text-right\">%s</td>"+
 					"<td class=\"text-right\">%s</td>"+
 					"<td class=\"text-right\">%s</td>"+
-					"<td class=\"text-right\">%s</td>\n",
+					"<td class=\"text-right\">%d</td>\n",
 				n.ActualRows,
 				"-",
 				"-",
 				n.MaxSeg,
-				"-")
-			HTML += fmt.Sprintf(
-				"<td class=\"text-right\">%.0f</td>"+
-					"<td class=\"text-right\">%.0f</td>"+
-					"<td class=\"text-right\">%.0f%%</td>"+
-					"<td class=\"text-right\">%.0f</td>"+
-					"<td class=\"text-right\">%.0f</td>",
-				n.MsFirst,
-				n.MsNode,
-				n.MsPrct,
-				n.MsEnd,
-				n.MsOffset)
+				n.Workers)
 		} else {
 			HTML += fmt.Sprintf("<td class=\"text-right\">%s</td>"+
 				"<td class=\"text-right\">%.0f</td>"+
@@ -373,17 +403,6 @@ func RenderNodeHtml(n *plan.Node, indent int) string {
 				n.MaxRows,
 				n.MaxSeg,
 				n.Workers)
-			HTML += fmt.Sprintf(
-				"<td class=\"text-right\">%.0f</td>"+
-					"<td class=\"text-right\">%.0f</td>"+
-					"<td class=\"text-right\">%.0f%%</td>"+
-					"<td class=\"text-right\">%.0f</td>"+
-					"<td class=\"text-right\">%.0f</td>",
-				n.MsFirst,
-				n.MsNode,
-				n.MsPrct,
-				n.MsEnd,
-				n.MsOffset)
 		}
 	}
 
@@ -414,36 +433,60 @@ func RenderPlanHtml(p *plan.Plan, indent int, colspan int) string {
 }
 
 func RenderExplainHtml(e *plan.Explain) string {
+	isAnalyzed := e.Plans[0].TopNode.IsAnalyzed
 	HTML := ""
-	HTML += `<table class="table table-condensed table-striped table-bordered">`
+	HTML += `<table id="planTable" class="table table-condensed table-striped table-bordered table-hover">`
 	HTML += "<tr>"
+	NewQE := "<span class=\"label label-info\">New Executor Mode</span>"
+	if !e.NewExecutorMode {
+		NewQE = "<span class=\"label label-default\">Old Executor Mode</span>"
+	}
+
+	thNewQe := ""
+	thPlan := "<th colspan=\"1\" class=\"text-center\">Plan Info</th>"
+	thTime := ""
+	thCost := "<th colspan=\"5\" class=\"text-center\">Cost and Estimated</th>"
+	thStat := ""
+	if (isAnalyzed) {
+		thNewQe = "<th>" + NewQE + "</th>"
+		thTime = "<th colspan=\"5\" class=\"text-center\">Time Ms</th>"
+		thStat = "<th colspan=\"5\" class=\"text-center\">Row Stats</th>"
+	} else {
+		thPlan = "<th colspan=\"1\" class=\"text-center\">" + NewQE + "Plan Info</th>"
+	}
+
 	HTMLTH1 := "<tr>"
-	HTMLTH1 = "<th></th>" +
-		"<th colspan=\"2\" class=\"text-center\">Object</th>" +
-		"<th colspan=\"4\" class=\"text-center\">Cost</th>" +
-		"<th colspan=\"1\" class=\"text-center\">Estimated</th>"
+	HTMLTH1 = thNewQe + thPlan + thTime + thCost + thStat
+
 	HTMLTH2 := "<tr>"
-	HTMLTH2 += "<th>Query Plan:</th>" +
-		"<th class=\"text-right\">Name</th>" +
-		"<th class=\"text-right\">Type</th>" +
+	if (thNewQe != "") {
+		HTMLTH2 += "<th class=\"text-right\">Prct</th>"
+	}
+	HTMLTH2 += "<th>Query Plan:</th>"
+
+	if (thTime != "") {
+		HTMLTH2 += "" +
+			"<th class=\"text-right\" onclick=\"sortTable(2)\">Offset</th>" +
+			"<th class=\"text-right\" onclick=\"sortTable(3)\">First</th>" +
+			"<th class=\"text-right\" onclick=\"sortTable(4)\">End</th>" +
+			"<th class=\"text-right\" onclick=\"sortTable(5)\">Node</th>" +
+			"<th class=\"text-right\">Prct</th>"
+	}
+
+	HTMLTH2 += "" +
 		"<th class=\"text-right\">Startup</th>" +
+		"<th class=\"text-right\">Total</th>" +
 		"<th class=\"text-right\">Node</th>" +
 		"<th class=\"text-right\">Prct</th>" +
-		"<th class=\"text-right\">Total</th>" +
 		"<th class=\"text-right\">Rows</th>"
-	if e.Plans[0].TopNode.IsAnalyzed == true {
-		HTMLTH1 += "<th colspan=\"5\" class=\"text-center\">Row Stats</th>"
-		HTMLTH2 += "<th class=\"text-right\">Actual</th>" +
+
+	if (thStat != "") {
+		HTMLTH2 += "" +
+			"<th class=\"text-right\">Actual</th>" +
 			"<th class=\"text-right\">Avg</th>" +
 			"<th class=\"text-right\">Max</th>" +
 			"<th class=\"text-right\">Seg</th>" +
 			"<th class=\"text-right\">Workers</th>"
-		HTMLTH1 += "<th colspan=\"5\" class=\"text-center\">Time Ms</th>"
-		HTMLTH2 += "<th class=\"text-right\">First</th>" +
-			"<th class=\"text-right\">Node</th>" +
-			"<th class=\"text-right\">Prct</th>" +
-			"<th class=\"text-right\">End</th>" +
-			"<th class=\"text-right\">Offset</th>"
 	}
 
 	HTMLTH1 += "</tr>\n"
@@ -474,6 +517,13 @@ func RenderExplainHtml(e *plan.Explain) string {
 		HTML += fmt.Sprintf("\tMemory used: %d\n", e.MemoryUsed)
 		if e.MemoryWanted > 0 {
 			HTML += fmt.Sprintf("\tMemory wanted: %d\n", e.MemoryWanted)
+		}
+	}
+
+	if len(e.HawqStats) > 0 {
+		HTML += fmt.Sprintf("<strong>HAWQ statistics:</strong>\n")
+		for _, stat := range e.HawqStats {
+			HTML += fmt.Sprintf("\t%s\n\n", stat)
 		}
 	}
 
