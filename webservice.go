@@ -290,6 +290,18 @@ func GenerateExplain(w http.ResponseWriter, r *http.Request, planRecord PlanReco
 		planRecord.Ref)
 }
 
+func checkIsAnalyzed(n *plan.Node) bool {
+	if (n.IsAnalyzed) {
+		return true
+	}
+	for _, s := range n.SubNodes {
+		if checkIsAnalyzed(s) {
+			return true
+		}
+	}
+	return false
+}
+
 // Render node for output to HTML
 func RenderNodeHtml(n *plan.Node, indent int) string {
 	indent += 1
@@ -298,7 +310,7 @@ func RenderNodeHtml(n *plan.Node, indent int) string {
 	colspan := 8
 
 	// FIXME(chiyang): missing NewQE EXPLAIN ANALYZE info related InitPlan
-	if (len(n.SubNodes) > 0 && n.SubNodes[0].IsAnalyzed) {
+	if (checkIsAnalyzed(n)) {
 		n.IsAnalyzed = true
 	}
 
