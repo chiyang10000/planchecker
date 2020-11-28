@@ -116,20 +116,18 @@
     $(document).ready(function () {
 
         function getSubNodes(trSet, rootIndent) {
-            var outputStart = false;
             var outputStop = false;
             return trSet.filter(function () {
-                    if ($("td > strong", this).length == 0) return false;
-                    if (outputStart && outputStop) return false;
+                    if (outputStop) return false;
+
+                    if ($("td > strong", this).length == 0) return false; // header
                     let currWidth = parseInt($("td > strong", this).parent().css("padding-left"))
                     if (currWidth > rootIndent) {
-                        outputStart = true;
                         return true;
-                    }
-                    if (outputStart && currWidth <= rootIndent) {
+                    } else {
                         outputStop = true;
+                        return false;
                     }
-                    return false;
                 }
             );
         }
