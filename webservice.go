@@ -337,7 +337,9 @@ func RenderNodeHtml(n *plan.Node, indent int) string {
 			n.ObjectType, n.Object)
 	}
 
-	HTML += fmt.Sprintf("<button type=\"button\" class=plannode-button>-</button>")
+	if len(n.SubNodes) > 0 {
+		HTML += fmt.Sprintf("<button title=\"expland/collapse sub-tree\" type=\"button\" class=plannode-button>-</button>")
+	}
 
 	HTML += fmt.Sprintf("<strong>-> %s (cost=%.2f..%.2f rows=%d width=%d)</strong>\n",
 		//HTML += fmt.Sprintf("%s<strong>-> %s</strong>\n",
