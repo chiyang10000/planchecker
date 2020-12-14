@@ -1332,7 +1332,7 @@ func (e *Explain) PrintPlan() {
 
 	if e.Runtime > 0 {
 		fmt.Println("Total runtime:")
-		fmt.Printf("\t%.0f ms\n", e.Runtime)
+		fmt.Printf("\t%f ms\n", e.Runtime)
 	}
 
 }

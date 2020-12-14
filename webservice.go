@@ -537,7 +537,7 @@ func RenderExplainHtml(e *plan.Explain) string {
 	if len(e.HawqStats) > 0 {
 		HTML += fmt.Sprintf("<strong>HAWQ statistics:</strong>\n")
 		for _, stat := range e.HawqStats {
-			HTML += fmt.Sprintf("\t%s\n\n", stat)
+			HTML += fmt.Sprintf("\t%s\n", stat)
 		}
 	}
 
@@ -555,7 +555,7 @@ func RenderExplainHtml(e *plan.Explain) string {
 
 	if e.Runtime > 0 {
 		HTML += fmt.Sprintf("<strong>Total runtime:</strong>\n")
-		HTML += fmt.Sprintf("\t%.0f ms\n", e.Runtime)
+		HTML += fmt.Sprintf("\t%f ms\n", e.Runtime)
 	}
 
 	return HTML
